@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Registro Financiero Familiar</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #f0ede8; font-family: 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif; }
+    input:focus, select:focus { border-color: #1b2a4a !important; box-shadow: 0 0 0 2.5px rgba(27,42,74,.13); outline: none; }
+    button:active { transform: scale(0.97); }
+    @media (max-width: 520px) {
+      .grid2 { grid-template-columns: 1fr !important; }
+      .strip { grid-template-columns: 1fr !important; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useMemo, useEffect, useCallback } = React;
+
+    // ═══════════════════════════════════════════════════════
+    //  🔧 CONFIGURACIÓN GOOGLE SHEETS
+    //  Seguí las instrucciones del archivo INSTRUCCIONES.txt
+    //  para obtener estos valores y pegarlos aquí.
+    // ═══════════════════════════════════════════════════════
+    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw8QJJ8tzN3zt19eJwAGvXTunA1q6g026a17CbbwleKZTEr2jixTw8G231PEVxaRk6YdQ/exec";
+    // ═══════════════════════════════════════════════════════
+
+    const BANCOS_DEFECTO    = ["Davivienda", "DaviBank", "BAC", "Efectivo"];
+    const CATEGORIAS_DEFECTO = [
+      { grupo: "🏠 Nuestra Casa", subs: ["Mantenimiento General", "Servicios Públicos", "Hipoteca / Alquiler", "Seguro", "Jardín", "Reparaciones", "Otro"] },
+      { grupo: "🏢 Marsella",     subs: ["Alquiler Recibido", "Mantenimiento", "Cuota HOA", "Servicios Públicos", "Reparaciones", "Seguro", "Otro"] },
+      { grupo: "🏢 Cassis",       subs: ["Alquiler Recibido", "Mantenimiento", "Cuota HOA", "Servicios Públicos", "Reparaciones", "Seguro", "Otro"] },
+      { grupo: "🏢 Grimaud",      subs: ["Alquiler Recibido", "Mantenimiento", "Cuota HOA", "Servicios Públicos", "Reparaciones", "Seguro", "Otro"] },
+      { grupo: "🛒 Vida Diaria",  subs: ["Supermercado", "Restaurantes", "Cuidado Personal", "Ropa", "Artículos del Hogar", "Otro"] },
+      { grupo: "🚗 Transporte",   subs: ["Gasolina", "Mantenimiento Vehicular", "Taxi / Uber", "Parqueo", "Transporte Público", "Otro"] },
+      { grupo: "💊 Salud",        subs: ["Médico / Clínica", "Medicamentos", "Dental", "Seguro Médico", "Gimnasio / Bienestar", "Otro"] },
+      { grupo: "🎉 Ocio",         subs: ["Entretenimiento", "Viajes", "Salidas", "Suscripciones", "Regalos", "Otro"] },
+      { grupo: "📚 Educación",    subs: ["Colegio / Universidad", "Libros / Cursos", "Actividades Extracurriculares", "Otro"] },
+      { grupo: "💼 Ingresos",     subs: ["Salario", "Freelance / Consultoría", "Rendimiento de Inversiones", "Bono", "Otros Ingresos"] },
+      { grupo: "📦 Otro",         subs: ["Misceláneos"] },
+    ];
+
+    const hoy = () => new Date().toISOString().split("T")[0];
+    const fmt = (n) => Number(n).toLocaleString("es-CR", { minimumFractionDigits:2, maximumFractionDigits:2 });
+
+    const configurado = () => SCRIPT_URL !== "PEGAR_URL_DEL_APPS_SCRIPT_AQUI" && SCRIPT_URL.startsWith("https://");
+
+    async function apiCall(accion, datos = {}) {
+      const url = SCRIPT_URL + "?accion=" + accion;
+      if (accion === "leer") {
+        const r = await fetch(url);
+        return r.json();
+      } else {
+        const r = await fetch(url, {
+          method: "POST",
+          body: JSON.stringify({ accion, ...datos }),
+        });
+        return r.json();
+      }
+    }
+
+    function App() {
+      const [categorias, setCategorias] = useState(CATEGORIAS_DEFECTO);
+      const [bancos, setBancos]         = useState(BANCOS_DEFECTO);
+      const [tipoCambio, setTipoCambio] = useState(530);
+      const [moneda, setMoneda]         = useState("CRC");
+      const [entradas, setEntradas]     = useState([]);
+      const [tab, setTab]               = useState("agregar");
+      const [toast, setToast]           = useState(null);
+      const [cargando, setCargando]     = useState(false);
+      const [estadoSync, setEstadoSync] = useState("idle"); // idle | syncing | ok | error
+      const [ultimaSync, setUltimaSync] = useState(null);
+
+      const [form, setForm] = useState({
+        fecha: hoy(), grupo: CATEGORIAS_DEFECTO[0].grupo,
+        sub: CATEGORIAS_DEFECTO[0].subs[0], descripcion: "", montoCRC: "", banco: BANCOS_DEFECTO[0],
+      });
+      const [nuevoB, setNuevoB]         = useState("");
+      const [editandoB, setEditandoB]   = useState(null);
+      const [nuevoGrupo, setNuevoGrupo] = useState("");
+      const [grupoSel, setGrupoSel]     = useState(CATEGORIAS_DEFECTO[0].grupo);
+      const [nuevaSub, setNuevaSub]     = useState("");
+
+      const mostrarToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2800); };
+      const subsDeGrupo  = (g) => categorias.find(c => c.grupo === g)?.subs || [];
+      const esIngreso    = (e) => categorias.find(c => c.grupo === e.grupo)?.grupo.includes("Ingresos");
+
+      // ── Cargar datos desde Google Sheets al abrir ──
+      const cargarDesdeSheets = useCallback(async () => {
+        if (!configurado()) return;
+        setCargando(true);
+        setEstadoSync("syncing");
+        try {
+          const datos = await apiCall("leer");
+          if (datos.entradas)   setEntradas(datos.entradas);
+          if (datos.tipoCambio) setTipoCambio(datos.tipoCambio);
+          const ahora = new Date();
+          setUltimaSync(`${ahora.getHours()}:${String(ahora.getMinutes()).padStart(2,"0")}`);
+          setEstadoSync("ok");
+        } catch {
+          setEstadoSync("error");
+          mostrarToast("⚠️ Error conectando con Google Sheets");
+        } finally {
+          setCargando(false);
+        }
+      }, []);
+
+      useEffect(() => { cargarDesdeSheets(); }, []);
+
+      const cambiarForm = (campo, val) => {
+        setForm(prev => {
+          const sig = { ...prev, [campo]: val };
+          if (campo === "grupo") sig.sub = subsDeGrupo(val)[0] || "";
+          return sig;
+        });
+      };
+
+      const agregarEntrada = async () => {
+        const monto = parseFloat(form.montoCRC);
+        if (!monto || monto <= 0) return mostrarToast("⚠️ Ingresá un monto válido en ₡");
+        if (!form.descripcion.trim()) return mostrarToast("⚠️ Agregá una descripción");
+        const entrada = { ...form, id: Date.now(), montoCRC: monto };
+        // Optimistic update — se muestra de inmediato
+        setEntradas(p => [entrada, ...p]);
+        setForm(f => ({ ...f, fecha: hoy(), descripcion: "", montoCRC: "" }));
+        mostrarToast("✅ Guardando en Google Sheets…");
+        if (configurado()) {
+          setEstadoSync("syncing");
+          try {
+            await apiCall("agregar", { entrada });
+            setEstadoSync("ok");
+            mostrarToast("✅ ¡Sincronizado en Google Sheets!");
+          } catch {
+            setEstadoSync("error");
+            mostrarToast("⚠️ No se pudo sincronizar. Revisá la conexión.");
+          }
+        }
+      };
+
+      const eliminar = async (id) => {
+        setEntradas(p => p.filter(e => e.id !== id));
+        if (configurado()) {
+          try { await apiCall("eliminar", { id }); } catch {}
+        }
+        mostrarToast("🗑️ Eliminado");
+      };
+
+      const aUSD = (crc) => crc / tipoCambio;
+      const mostrarMonto = (crc) => moneda === "CRC" ? `₡${fmt(crc)}` : `$${fmt(aUSD(crc))}`;
+
+      const totales = useMemo(() => {
+        const ing = entradas.filter(esIngreso).reduce((s,e) => s + e.montoCRC, 0);
+        const gas = entradas.filter(e => !esIngreso(e)).reduce((s,e) => s + e.montoCRC, 0);
+        return { ing, gas, saldo: ing - gas };
+      }, [entradas, categorias]);
+
+      const agregarBanco = () => {
+        const b = nuevoB.trim(); if (!b || bancos.includes(b)) return;
+        setBancos(p => [...p, b]); setNuevoB(""); mostrarToast(`🏦 "${b}" agregado`);
+      };
+      const eliminarBanco = (b) => { if (bancos.length<=1) return; setBancos(p => p.filter(x => x!==b)); };
+      const guardarEditBanco = (viejo, val) => {
+        const v = val.trim(); if (!v) return;
+        setBancos(p => p.map(b => b===viejo ? v : b));
+        setEntradas(p => p.map(e => e.banco===viejo ? { ...e, banco:v } : e));
+        setEditandoB(null); mostrarToast("✏️ Banco actualizado");
+      };
+      const agregarGrupo = () => {
+        const g = nuevoGrupo.trim(); if (!g || categorias.find(c => c.grupo===g)) return;
+        setCategorias(p => [...p, { grupo:g, subs:["Otro"] }]);
+        setGrupoSel(g); setNuevoGrupo(""); mostrarToast(`📁 "${g}" agregado`);
+      };
+      const eliminarGrupo = (g) => setCategorias(p => p.filter(c => c.grupo!==g));
+      const agregarSub = () => {
+        const s = nuevaSub.trim(); if (!s) return;
+        setCategorias(p => p.map(c => c.grupo===grupoSel ? { ...c, subs:[...c.subs,s] } : c));
+        setNuevaSub(""); mostrarToast("➕ Subcategoría agregada");
+      };
+      const eliminarSub = (grupo, sub) => setCategorias(p =>
+        p.map(c => c.grupo===grupo ? { ...c, subs:c.subs.filter(s => s!==sub) } : c)
+      );
+
+      const syncColor = { idle:"#aaa", syncing:"#f59e0b", ok:"#22c55e", error:"#ef4444" }[estadoSync];
+      const syncLabel = { idle:"Sin sync", syncing:"Sincronizando…", ok:`Sincronizado ${ultimaSync||""}`, error:"Error de conexión" }[estadoSync];
+
+      const S = {
+        header: { background:"linear-gradient(135deg,#1b2a4a 0%,#2d4a7a 100%)", color:"#fff", padding:"22px 20px 0" },
+        hWrap:  { maxWidth:740, margin:"0 auto", display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:16, paddingBottom:16 },
+        h1:     { margin:0, fontSize:22, fontWeight:"bold", color:"#fff" },
+        tag:    { margin:"3px 0 0", fontSize:12, color:"rgba(255,255,255,.55)" },
+        hRight: { display:"flex", flexDirection:"column", gap:10, alignItems:"flex-end" },
+        fxRow:  { display:"flex", alignItems:"center", gap:8 },
+        fxLbl:  { fontSize:11, color:"rgba(255,255,255,.6)", textTransform:"uppercase", letterSpacing:"0.5px" },
+        fxWrap: { display:"flex", alignItems:"center", background:"rgba(255,255,255,.12)", borderRadius:8, padding:"4px 8px", gap:4 },
+        fxInp:  { background:"none", border:"none", color:"#fff", fontSize:14, fontWeight:"bold", width:72, outline:"none", fontFamily:"inherit" },
+        fxSuf:  { fontSize:11, color:"rgba(255,255,255,.55)" },
+        cToggle:{ display:"flex", gap:4 },
+        cBtn:   { padding:"5px 12px", borderRadius:20, border:"1.5px solid rgba(255,255,255,.3)", background:"transparent", color:"rgba(255,255,255,.7)", fontSize:12, cursor:"pointer", fontFamily:"inherit" },
+        cBtnA:  { background:"rgba(255,255,255,.2)", color:"#fff", borderColor:"rgba(255,255,255,.8)" },
+        strip:  { maxWidth:740, margin:"0 auto", display:"grid", gridTemplateColumns:"repeat(3,1fr)", borderTop:"1px solid rgba(255,255,255,.1)", paddingTop:12, paddingBottom:12 },
+        sItem:  { textAlign:"center", padding:"4px 0" },
+        sLbl:   { fontSize:10, textTransform:"uppercase", letterSpacing:"0.5px", color:"rgba(255,255,255,.5)", marginBottom:3 },
+        sAmt:   { fontSize:17, fontWeight:"bold" },
+        sSub:   { fontSize:10, color:"rgba(255,255,255,.4)", marginTop:2 },
+        nav:    { maxWidth:740, margin:"0 auto", display:"flex", gap:6, padding:"14px 16px 0", alignItems:"center", flexWrap:"wrap" },
+        nBtn:   { padding:"8px 16px", borderRadius:20, border:"1.5px solid #ccc", background:"#fff", fontSize:13, cursor:"pointer", fontFamily:"inherit", color:"#555" },
+        nBtnA:  { background:"#1b2a4a", color:"#fff", borderColor:"#1b2a4a" },
+        expBtn: { marginLeft:"auto", padding:"8px 16px", borderRadius:20, border:"none", background:"#c9a84c", color:"#fff", fontSize:13, cursor:"pointer", fontWeight:"bold", fontFamily:"inherit" },
+        syncBadge: { fontSize:11, display:"flex", alignItems:"center", gap:4, padding:"4px 10px", borderRadius:20, border:"1.5px solid #e5e7eb", background:"#fff", cursor:"pointer" },
+        main:   { maxWidth:740, margin:"16px auto 0", padding:"0 16px 60px" },
+        card:   { background:"#fff", borderRadius:16, padding:"22px 20px", boxShadow:"0 2px 16px rgba(0,0,0,.07)" },
+        noConf: { background:"#fff7ed", border:"2px dashed #f59e0b", borderRadius:16, padding:"24px 20px", marginBottom:16 },
+        grid2:  { display:"grid", gridTemplateColumns:"1fr 1fr", gap:"14px 18px" },
+        lbl:    { display:"flex", flexDirection:"column", fontSize:12, fontWeight:"600", color:"#555", gap:5 },
+        inp:    { padding:"9px 11px", borderRadius:8, border:"1.5px solid #ddd", fontSize:13, background:"#fafafa", fontFamily:"inherit", width:"100%" },
+        aWrap:  { position:"relative" },
+        aPre:   { position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", fontSize:13, color:"#888", pointerEvents:"none" },
+        hint2:  { fontSize:11, color:"#888", marginTop:2 },
+        addBtn: { marginTop:20, width:"100%", padding:"13px 0", borderRadius:10, border:"none", background:"#1b2a4a", color:"#fff", fontSize:15, fontWeight:"bold", cursor:"pointer", fontFamily:"inherit" },
+        empty:  { textAlign:"center", color:"#aaa", padding:"32px 0", fontSize:14 },
+        eList:  { display:"flex", flexDirection:"column", gap:8 },
+        entry:  { display:"flex", justifyContent:"space-between", alignItems:"flex-start", padding:"12px 14px", borderRadius:10, background:"#f8f7f4", borderLeft:"4px solid #1b2a4a", gap:8 },
+        eL:     { flex:1, minWidth:0 },
+        eDate:  { fontSize:11, color:"#aaa", marginBottom:2 },
+        eDesc:  { fontSize:14, fontWeight:"600", color:"#1b2a4a", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" },
+        eMeta:  { fontSize:11, color:"#888", marginTop:2 },
+        eR:     { display:"flex", flexDirection:"column", alignItems:"flex-end", gap:2, flexShrink:0 },
+        eAmt:   { fontSize:15, fontWeight:"bold" },
+        eUSD:   { fontSize:11, color:"#aaa" },
+        del:    { background:"none", border:"none", color:"#ddd", cursor:"pointer", fontSize:14, padding:"2px 4px", marginTop:4 },
+        stitle: { margin:"0 0 14px", fontSize:15, fontWeight:"bold", color:"#1b2a4a" },
+        cRow:   { display:"flex", flexWrap:"wrap", gap:6, marginBottom:12 },
+        chip:   { display:"flex", alignItems:"center", gap:4, background:"#e8f0fe", borderRadius:20, padding:"4px 10px 4px 12px", fontSize:12 },
+        cLbl:   { cursor:"pointer", color:"#1b2a4a" },
+        cInp:   { border:"none", background:"transparent", fontSize:12, outline:"none", width:90, fontFamily:"inherit" },
+        cDel:   { background:"none", border:"none", cursor:"pointer", color:"#888", fontSize:14, lineHeight:1, padding:0 },
+        aRow:   { display:"flex", gap:8, alignItems:"center" },
+        mBtn:   { padding:"8px 14px", borderRadius:8, border:"none", background:"#1b2a4a", color:"#fff", fontSize:12, cursor:"pointer", whiteSpace:"nowrap", fontFamily:"inherit" },
+        hintTxt:{ fontSize:11, color:"#aaa", margin:"8px 0 0", fontStyle:"italic" },
+        code:   { background:"#f1f5f9", borderRadius:6, padding:"12px 14px", fontSize:12, fontFamily:"monospace", whiteSpace:"pre-wrap", margin:"10px 0", lineHeight:1.6 },
+        toast:  { position:"fixed", top:18, left:"50%", transform:"translateX(-50%)", background:"#1b2a4a", color:"#fff", padding:"10px 24px", borderRadius:30, fontSize:13, fontWeight:"bold", zIndex:9999, boxShadow:"0 4px 24px rgba(0,0,0,.18)", whiteSpace:"nowrap" },
+      };
+
+      return (
+        <div style={{ background:"#f0ede8", minHeight:"100vh", fontFamily:"'Palatino Linotype',Palatino,'Book Antiqua',Georgia,serif" }}>
+          {toast && <div style={S.toast}>{toast}</div>}
+          {cargando && <div style={{ position:"fixed", top:0, left:0, right:0, height:3, background:"#c9a84c", zIndex:9998 }} />}
+
+          <header style={S.header}>
+            <div style={S.hWrap}>
+              <div>
+                <h1 style={S.h1}>Registro Financiero Familiar</h1>
+                <p style={S.tag}>Costa Rica · {new Date().getFullYear()} · Google Sheets</p>
+              </div>
+              <div style={S.hRight}>
+                <div style={S.fxRow}>
+                  <span style={S.fxLbl}>Tipo de Cambio Bloomberg</span>
+                  <div style={S.fxWrap}>
+                    <span style={{ fontSize:13, color:"#fff", opacity:0.7 }}>₡</span>
+                    <input type="number" value={tipoCambio} min="1"
+                      onChange={e => setTipoCambio(+e.target.value)} style={S.fxInp} />
+                    <span style={S.fxSuf}>/ $1</span>
+                  </div>
+                </div>
+                <div style={S.cToggle}>
+                  {["CRC","USD"].map(c => (
+                    <button key={c} onClick={() => setMoneda(c)}
+                      style={{ ...S.cBtn, ...(moneda===c ? S.cBtnA : {}) }}>
+                      {c==="CRC" ? "₡ CRC" : "$ USD"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="strip" style={S.strip}>
+              {[
+                { label:"Ingresos", val:totales.ing, color:"#6ee7b7" },
+                { label:"Gastos",   val:totales.gas, color:"#fca5a5" },
+                { label:"Saldo",    val:totales.saldo, color:totales.saldo>=0?"#6ee7b7":"#fca5a5" },
+              ].map(({ label, val, color }) => (
+                <div key={label} style={S.sItem}>
+                  <div style={S.sLbl}>{label}</div>
+                  <div style={{ ...S.sAmt, color }}>{mostrarMonto(val)}</div>
+                  {moneda==="CRC" && <div style={S.sSub}>${fmt(aUSD(val))} USD</div>}
+                </div>
+              ))}
+            </div>
+          </header>
+
+          <nav style={S.nav}>
+            {[["agregar","➕ Agregar"],["lista","📋 Movimientos"],["ajustes","⚙️ Ajustes"],["setup","🔌 Conexión"]].map(([key,lbl]) => (
+              <button key={key} onClick={() => setTab(key)}
+                style={{ ...S.nBtn, ...(tab===key ? S.nBtnA : {}) }}>{lbl}</button>
+            ))}
+            <button style={S.syncBadge} onClick={cargarDesdeSheets} title="Actualizar desde Sheets">
+              <span style={{ width:8, height:8, borderRadius:"50%", background:syncColor, display:"inline-block" }} />
+              {syncLabel}
+            </button>
+          </nav>
+
+          <div style={S.main}>
+            {!configurado() && tab !== "setup" && (
+              <div style={S.noConf}>
+                <strong>⚠️ Falta configurar Google Sheets.</strong> Andá a la pestaña <strong>🔌 Conexión</strong> para ver las instrucciones.
+              </div>
+            )}
+
+            {tab==="agregar" && (
+              <div style={S.card}>
+                <div className="grid2" style={S.grid2}>
+                  <label style={S.lbl}>📅 Fecha
+                    <input type="date" value={form.fecha} onChange={e => cambiarForm("fecha",e.target.value)} style={S.inp} />
+                  </label>
+                  <label style={S.lbl}>🏦 Banco / Fuente
+                    <select value={form.banco} onChange={e => cambiarForm("banco",e.target.value)} style={S.inp}>
+                      {bancos.map(b => <option key={b}>{b}</option>)}
+                    </select>
+                  </label>
+                  <label style={S.lbl}>📁 Categoría
+                    <select value={form.grupo} onChange={e => cambiarForm("grupo",e.target.value)} style={S.inp}>
+                      {categorias.map(c => <option key={c.grupo}>{c.grupo}</option>)}
+                    </select>
+                  </label>
+                  <label style={S.lbl}>🏷️ Subcategoría
+                    <select value={form.sub} onChange={e => cambiarForm("sub",e.target.value)} style={S.inp}>
+                      {subsDeGrupo(form.grupo).map(s => <option key={s}>{s}</option>)}
+                    </select>
+                  </label>
+                  <label style={S.lbl}>₡ Monto (colones)
+                    <div style={S.aWrap}>
+                      <span style={S.aPre}>₡</span>
+                      <input type="number" min="0" step="1" placeholder="Ej: 25000"
+                        value={form.montoCRC} onChange={e => cambiarForm("montoCRC",e.target.value)}
+                        onKeyDown={e => e.key==="Enter" && agregarEntrada()}
+                        style={{ ...S.inp, paddingLeft:28 }} />
+                    </div>
+                    {form.montoCRC>0 && <span style={S.hint2}>≈ ${fmt(aUSD(+form.montoCRC))} USD</span>}
+                  </label>
+                  <label style={S.lbl}>📝 Descripción
+                    <input type="text" placeholder="Ej: Electricidad Grimaud — julio"
+                      value={form.descripcion} onChange={e => cambiarForm("descripcion",e.target.value)}
+                      onKeyDown={e => e.key==="Enter" && agregarEntrada()} style={S.inp} />
+                  </label>
+                </div>
+                <button style={S.addBtn} onClick={agregarEntrada}>Agregar Entrada</button>
+              </div>
+            )}
+
+            {tab==="lista" && (
+              <div style={S.card}>
+                {entradas.length===0
+                  ? <div style={S.empty}>Aún no hay movimientos.</div>
+                  : <div style={S.eList}>
+                      {entradas.map(e => (
+                        <div key={e.id} style={{ ...S.entry, borderLeftColor:esIngreso(e)?"#43a047":"#1b2a4a" }}>
+                          <div style={S.eL}>
+                            <div style={S.eDate}>{e.fecha} · {e.banco}</div>
+                            <div style={S.eDesc}>{e.descripcion}</div>
+                            <div style={S.eMeta}>{e.grupo} → {e.sub}</div>
+                          </div>
+                          <div style={S.eR}>
+                            <div style={{ ...S.eAmt, color:esIngreso(e)?"#2e7d32":"#1b2a4a" }}>
+                              {mostrarMonto(e.montoCRC)}
+                            </div>
+                            {moneda==="CRC" && <div style={S.eUSD}>${fmt(aUSD(e.montoCRC))}</div>}
+                            <button style={S.del} onClick={() => eliminar(e.id)}>✕</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                }
+              </div>
+            )}
+
+            {tab==="ajustes" && (
+              <div style={{ display:"flex", flexDirection:"column", gap:20 }}>
+                <div style={S.card}>
+                  <h3 style={S.stitle}>🏦 Bancos y Fuentes</h3>
+                  <div style={S.cRow}>
+                    {bancos.map(b => (
+                      <div key={b} style={S.chip}>
+                        {editandoB===b
+                          ? <input autoFocus defaultValue={b} style={S.cInp}
+                              onBlur={e => guardarEditBanco(b,e.target.value)}
+                              onKeyDown={e => { if(e.key==="Enter") guardarEditBanco(b,e.target.value); if(e.key==="Escape") setEditandoB(null); }} />
+                          : <span style={S.cLbl} onClick={() => setEditandoB(b)}>{b}</span>
+                        }
+                        <button style={S.cDel} onClick={() => eliminarBanco(b)}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={S.aRow}>
+                    <input placeholder="Nuevo banco…" value={nuevoB} onChange={e => setNuevoB(e.target.value)}
+                      onKeyDown={e => e.key==="Enter" && agregarBanco()} style={{ ...S.inp, flex:1 }} />
+                    <button style={S.mBtn} onClick={agregarBanco}>Agregar</button>
+                  </div>
+                </div>
+                <div style={S.card}>
+                  <h3 style={S.stitle}>📁 Categorías y Subcategorías</h3>
+                  <div style={S.aRow}>
+                    <input placeholder="Nueva categoría (ej: 🏢 Valencia)…" value={nuevoGrupo}
+                      onChange={e => setNuevoGrupo(e.target.value)}
+                      onKeyDown={e => e.key==="Enter" && agregarGrupo()} style={{ ...S.inp, flex:1 }} />
+                    <button style={S.mBtn} onClick={agregarGrupo}>Agregar Grupo</button>
+                  </div>
+                  <label style={{ ...S.lbl, marginTop:14 }}>
+                    Grupo a editar:
+                    <select value={grupoSel} onChange={e => setGrupoSel(e.target.value)} style={S.inp}>
+                      {categorias.map(c => <option key={c.grupo}>{c.grupo}</option>)}
+                    </select>
+                  </label>
+                  <div style={S.cRow}>
+                    {subsDeGrupo(grupoSel).map(sub => (
+                      <div key={sub} style={S.chip}>
+                        <span style={S.cLbl}>{sub}</span>
+                        <button style={S.cDel} onClick={() => eliminarSub(grupoSel,sub)}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={S.aRow}>
+                    <input placeholder="Nueva subcategoría…" value={nuevaSub}
+                      onChange={e => setNuevaSub(e.target.value)}
+                      onKeyDown={e => e.key==="Enter" && agregarSub()} style={{ ...S.inp, flex:1 }} />
+                    <button style={S.mBtn} onClick={agregarSub}>Agregar Sub</button>
+                  </div>
+                </div>
+                <div style={S.card}>
+                  <h3 style={S.stitle}>💱 Tipo de Cambio</h3>
+                  <label style={S.lbl}>Colones por 1 USD
+                    <div style={S.aWrap}>
+                      <span style={S.aPre}>₡</span>
+                      <input type="number" value={tipoCambio} min="1"
+                        onChange={e => setTipoCambio(+e.target.value)}
+                        style={{ ...S.inp, paddingLeft:28, maxWidth:200 }} />
+                    </div>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {tab==="setup" && (
+              <div style={S.card}>
+                <h2 style={{ ...S.stitle, fontSize:18, marginBottom:20 }}>🔌 Configurar Google Sheets (paso a paso)</h2>
+
+                <div style={{ display:"flex", flexDirection:"column", gap:20 }}>
+                  {[
+                    {
+                      n:1, titulo:"Crear la hoja de Google Sheets",
+                      texto:"Andá a sheets.google.com → Creá una hoja nueva → Nombrala 'Registro Familiar'. En la primera fila escribí estos encabezados exactamente así:",
+                      codigo:"id | fecha | grupo | sub | descripcion | montoCRC | banco"
+                    },
+                    {
+                      n:2, titulo:"Crear el Apps Script",
+                      texto:"Dentro de la hoja: menú Extensiones → Apps Script. Borrá todo el código que aparece y pegá este:",
+                      codigo:`function doGet(e) {
+  var hoja = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Movimientos");
+  var filas = hoja.getDataRange().getValues();
+  var entradas = filas.slice(1).map(function(f) {
+    return { id:f[0], fecha:f[1], grupo:f[2], sub:f[3], descripcion:f[4], montoCRC:f[5], banco:f[6] };
+  }).filter(function(e){ return e.id; });
+  return ContentService.createTextOutput(JSON.stringify({ entradas: entradas }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e) {
+  var datos = JSON.parse(e.postData.contents);
+  var hoja = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Movimientos");
+  if (datos.accion === "agregar") {
+    var ent = datos.entrada;
+    hoja.appendRow([ent.id, ent.fecha, ent.grupo, ent.sub, ent.descripcion, ent.montoCRC, ent.banco]);
+  } else if (datos.accion === "eliminar") {
+    var filas = hoja.getDataRange().getValues();
+    for (var i = 1; i < filas.length; i++) {
+      if (String(filas[i][0]) === String(datos.id)) { hoja.deleteRow(i+1); break; }
+    }
+  }
+  return ContentService.createTextOutput(JSON.stringify({ ok: true }))
+    .setMimeType(ContentService.MimeType.JSON);
+}`
+                    },
+                    {
+                      n:3, titulo:"Renombrar la hoja a 'Movimientos'",
+                      texto:"Volvé a la hoja de cálculo. Hacé clic derecho en la pestaña que dice 'Hoja 1' → Cambiar nombre → escribí exactamente: Movimientos"
+                    },
+                    {
+                      n:4, titulo:"Publicar el script como aplicación web",
+                      texto:"En Apps Script: clic en 'Implementar' → 'Nueva implementación' → Tipo: Aplicación web → Ejecutar como: Yo → Quién tiene acceso: Cualquier persona → clic en 'Implementar'. Copiá la URL que aparece (empieza con https://script.google.com/macros/s/...)"
+                    },
+                    {
+                      n:5, titulo:"Pegar la URL en este archivo HTML",
+                      texto:"Abrí el archivo RegistroFinanciero_GoogleSheets.html en un editor de texto (clic derecho → Abrir con → Notepad o TextEdit). Buscá esta línea y reemplazá el texto entre comillas con tu URL:",
+                      codigo:`const SCRIPT_URL = "PEGAR_URL_DEL_APPS_SCRIPT_AQUI";`
+                    },
+                    {
+                      n:6, titulo:"¡Listo! Compartir con tu esposo",
+                      texto:"Guardá el archivo y compartilo por WhatsApp o Google Drive. Ambos pueden abrirlo en su navegador y los datos se guardan en la misma hoja de Google Sheets en tiempo real."
+                    }
+                  ].map(({ n, titulo, texto, codigo }) => (
+                    <div key={n} style={{ display:"flex", gap:14, alignItems:"flex-start" }}>
+                      <div style={{ width:28, height:28, borderRadius:"50%", background:"#1b2a4a", color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, fontWeight:"bold", flexShrink:0, marginTop:2 }}>{n}</div>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontWeight:"bold", color:"#1b2a4a", marginBottom:4 }}>{titulo}</div>
+                        <div style={{ fontSize:13, color:"#555", lineHeight:1.6 }}>{texto}</div>
+                        {codigo && <div style={S.code}>{codigo}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ marginTop:24, padding:"14px 16px", background:"#f0fdf4", borderRadius:12, border:"1.5px solid #bbf7d0" }}>
+                  <strong style={{ color:"#166534" }}>💡 Tip:</strong>
+                  <span style={{ fontSize:13, color:"#166534" }}> La hoja de Google Sheets queda como tu base de datos. Podés verla y editarla directamente también — es tu respaldo automático.</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
