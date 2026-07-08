@@ -28,7 +28,7 @@
     //  Seguí las instrucciones del archivo INSTRUCCIONES.txt
     //  para obtener estos valores y pegarlos aquí.
     // ═══════════════════════════════════════════════════════
-    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw8QJJ8tzN3zt19eJwAGvXTunA1q6g026a17CbbwleKZTEr2jixTw8G231PEVxaRk6YdQ/exec";
+    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzQoGqVnWHX-dbM-w3GmjPYd5sGsM_oSAHCBEbpAJ1xH3unmK4YQ1RtJPIXpy9mpdYiFw/exec";
     // ═══════════════════════════════════════════════════════
 
     const BANCOS_DEFECTO    = ["Davivienda", "DaviBank", "BAC", "Efectivo"];
@@ -49,7 +49,7 @@
     const hoy = () => new Date().toISOString().split("T")[0];
     const fmt = (n) => Number(n).toLocaleString("es-CR", { minimumFractionDigits:2, maximumFractionDigits:2 });
 
-    const configurado = () => SCRIPT_URL !== "https://script.google.com/macros/s/AKfycbw8QJJ8tzN3zt19eJwAGvXTunA1q6g026a17CbbwleKZTEr2jixTw8G231PEVxaRk6YdQ/exec" && SCRIPT_URL.startsWith("https://");
+    const configurado = () => SCRIPT_URL !== "https://script.google.com/macros/s/AKfycbzQoGqVnWHX-dbM-w3GmjPYd5sGsM_oSAHCBEbpAJ1xH3unmK4YQ1RtJPIXpy9mpdYiFw/exec" && SCRIPT_URL.startsWith("https://");
 
     async function apiCall(accion, datos = {}) {
       const url = SCRIPT_URL + "?accion=" + accion;
